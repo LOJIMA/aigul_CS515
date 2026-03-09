@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Tuple
 
 import torch
@@ -29,7 +30,7 @@ class ModelConfig:
     hidden_sizes: List[int] = field(default_factory=lambda: [512, 256, 128])
     num_classes: int = 10
 
-    activation: str = "relu"          # relu | gelu
+    activation: str = "relu"
     dropout: float = 0.3
     use_batch_norm: bool = False
 
@@ -41,35 +42,44 @@ class TrainConfig:
     batch_size: int = 64
     learning_rate: float = 1e-3
 
-    optimizer: str = "adam"           # adam | sgd
-    momentum: float = 0.9             # used only for SGD
+    optimizer: str = "adam"
+    momentum: float = 0.9
 
-    scheduler: str = "none"           # none | step | plateau | cosine
-    step_size: int = 10               # for StepLR
-    gamma: float = 0.1                # for StepLR
-    scheduler_patience: int = 3       # for ReduceLROnPlateau
-    scheduler_factor: float = 0.5     # for ReduceLROnPlateau
+    scheduler: str = "none"
+    step_size: int = 10
+    gamma: float = 0.1
+    scheduler_patience: int = 3
+    scheduler_factor: float = 0.5
     min_lr: float = 1e-6
 
     early_stopping_patience: int = 5
     min_delta: float = 0.0
 
-    regularizer: str = "none"         # none | l1 | l2
+    regularizer: str = "none"
     reg_lambda: float = 0.0
-    weight_decay: float = 0.0         # typically used for L2 in optimizer
+    weight_decay: float = 0.0
 
 
 @dataclass
 class RunConfig:
-    """Configuration related to execution, logging, and saving."""
-    mode: str = "both"                # train | test | both
+    """Configuration related to execution, logging, saving, and project structure."""
+    mode: str = "both"
     seed: int = 42
-    device: str = "auto"              # auto | cpu | cuda | mps
+    device: str = "auto"
 
-    save_dir: str = "./results/checkpoints"
-    save_path: str = "./results/checkpoints/best_model.pt"
-    log_interval: int = 100
+    project_name: str = "HW1"
     experiment_name: str = "mlp_mnist"
+
+    checkpoint_root: str = "./results/checkpoints"
+    log_root: str = "./results/logs"
+    plot_root: str = "./results/plots"
+
+    checkpoint_dir: str = "./results/checkpoints/HW1/mlp_mnist"
+    log_dir: str = "./results/logs/HW1/mlp_mnist"
+    plot_dir: str = "./results/plots/HW1/mlp_mnist"
+
+    save_path: str = "./results/checkpoints/HW1/mlp_mnist/mlp_mnist_best_model.pt"
+    log_interval: int = 100
 
 
 @dataclass
@@ -82,18 +92,6 @@ class Config:
 
 
 def _resolve_device(device: str) -> str:
-    """
-    Resolve the execution device.
-
-    Args:
-        device: Requested device string.
-
-    Returns:
-        A concrete device string that can be used by PyTorch.
-
-    Raises:
-        ValueError: If the device argument is invalid.
-    """
     device = device.lower()
 
     if device == "auto":
@@ -110,15 +108,6 @@ def _resolve_device(device: str) -> str:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    """
-    Validate CLI arguments after parsing.
-
-    Args:
-        args: Parsed argparse namespace.
-
-    Raises:
-        ValueError: If any argument combination is invalid.
-    """
     if args.val_split <= 0.0 or args.val_split >= 1.0:
         raise ValueError("val_split must be in the range (0, 1).")
 
@@ -164,33 +153,37 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.min_lr < 0.0:
         raise ValueError("min_lr must be non-negative.")
 
+    if not (0.0 < args.gamma <= 1.0):
+        raise ValueError("gamma must be in the range (0, 1].")
+
+    if not (0.0 < args.scheduler_factor <= 1.0):
+        raise ValueError("scheduler_factor must be in the range (0, 1].")
+
+    if args.momentum < 0.0 or args.momentum >= 1.0:
+        raise ValueError("momentum must be in the range [0, 1).")
+
 
 def get_parser() -> argparse.ArgumentParser:
-    """
-    Build and return the argument parser.
-
-    Returns:
-        Configured ArgumentParser instance.
-    """
     parser = argparse.ArgumentParser(
         description="CS515 HW1a - MNIST classification with configurable MLP"
     )
 
-    # -------------------------
     # Run / execution arguments
-    # -------------------------
     parser.add_argument("--mode", choices=["train", "test", "both"], default="both")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto",
                         help="auto, cpu, cuda, or mps")
+
+    parser.add_argument("--project_name", type=str, default="HW1")
     parser.add_argument("--experiment_name", type=str, default="mlp_mnist")
-    parser.add_argument("--save_dir", type=str, default="./results/checkpoints")
-    parser.add_argument("--save_path", type=str, default="./results/checkpoints/best_model.pt")
+
+    parser.add_argument("--checkpoint_root", type=str, default="./results/checkpoints")
+    parser.add_argument("--log_root", type=str, default="./results/logs")
+    parser.add_argument("--plot_root", type=str, default="./results/plots")
+
     parser.add_argument("--log_interval", type=int, default=100)
 
-    # -------------------------
     # Data arguments
-    # -------------------------
     parser.add_argument("--dataset", choices=["mnist"], default="mnist")
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--val_split", type=float, default=0.1)
@@ -198,9 +191,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pin_memory", action="store_true",
                         help="Enable pin_memory in DataLoader")
 
-    # -------------------------
     # Model arguments
-    # -------------------------
     parser.add_argument("--hidden_sizes", type=int, nargs="+",
                         default=[512, 256, 128],
                         help="Hidden layer sizes, e.g. --hidden_sizes 512 256 128")
@@ -209,9 +200,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use_batch_norm", action="store_true",
                         help="Use BatchNorm1d before activation")
 
-    # -------------------------
     # Training arguments
-    # -------------------------
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -239,17 +228,10 @@ def get_parser() -> argparse.ArgumentParser:
 
 
 def get_config() -> Config:
-    """
-    Parse CLI arguments and return structured experiment configuration.
-
-    Returns:
-        Config object composed of DataConfig, ModelConfig, TrainConfig, and RunConfig.
-    """
     parser = get_parser()
     args = parser.parse_args()
     _validate_args(args)
 
-    # Dataset-dependent values for MNIST
     input_size = 784
     num_classes = 10
     mean = (0.1307,)
@@ -257,11 +239,14 @@ def get_config() -> Config:
 
     resolved_device = _resolve_device(args.device)
 
-    # If user selects L2 regularization but leaves weight_decay at 0,
-    # map reg_lambda into weight_decay automatically.
     weight_decay = args.weight_decay
     if args.regularizer == "l2" and weight_decay == 0.0:
         weight_decay = args.reg_lambda
+
+    checkpoint_dir = Path(args.checkpoint_root) / args.project_name / args.experiment_name
+    log_dir = Path(args.log_root) / args.project_name / args.experiment_name
+    plot_dir = Path(args.plot_root) / args.project_name / args.experiment_name
+    save_path = checkpoint_dir / f"{args.experiment_name}_best_model.pt"
 
     data_cfg = DataConfig(
         dataset=args.dataset,
@@ -307,10 +292,16 @@ def get_config() -> Config:
         mode=args.mode,
         seed=args.seed,
         device=resolved_device,
-        save_dir=args.save_dir,
-        save_path=args.save_path,
-        log_interval=args.log_interval,
+        project_name=args.project_name,
         experiment_name=args.experiment_name,
+        checkpoint_root=args.checkpoint_root,
+        log_root=args.log_root,
+        plot_root=args.plot_root,
+        checkpoint_dir=str(checkpoint_dir),
+        log_dir=str(log_dir),
+        plot_dir=str(plot_dir),
+        save_path=str(save_path),
+        log_interval=args.log_interval,
     )
 
     return Config(

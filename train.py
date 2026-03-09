@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -12,6 +13,8 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from parameters import Config
+
+logger = logging.getLogger("cs515")
 
 
 def get_transforms(config: Config) -> transforms.Compose:
@@ -87,23 +90,6 @@ def get_train_val_loaders(config: Config) -> Tuple[DataLoader, DataLoader]:
     )
 
     return train_loader, val_loader
-
-
-def compute_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
-    """
-    Compute batch accuracy.
-
-    Args:
-        logits: Model output logits of shape (B, C).
-        targets: Ground-truth labels of shape (B,).
-
-    Returns:
-        Accuracy as a float in [0, 1].
-    """
-    predictions = torch.argmax(logits, dim=1)
-    correct = (predictions == targets).sum().item()
-    total = targets.size(0)
-    return correct / total
 
 
 def compute_l1_penalty(model: nn.Module) -> torch.Tensor:
@@ -274,9 +260,12 @@ def train_one_epoch(
         if (batch_idx + 1) % config.run.log_interval == 0:
             avg_loss = running_loss / total_samples
             avg_acc = running_correct / total_samples
-            print(
-                f"  [Batch {batch_idx + 1:>4}/{len(loader)}] "
-                f"train_loss={avg_loss:.4f} | train_acc={avg_acc:.4f}"
+            logger.info(
+                "  [Batch %4d/%d] train_loss=%.4f | train_acc=%.4f",
+                batch_idx + 1,
+                len(loader),
+                avg_loss,
+                avg_acc,
             )
 
     epoch_loss = running_loss / total_samples
@@ -339,6 +328,7 @@ def save_history(history: Dict[str, Any], config: Config) -> None:
         config: Full experiment configuration.
     """
     save_path = Path(config.run.save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     history_path = save_path.parent / f"{config.run.experiment_name}_history.json"
 
     with history_path.open("w", encoding="utf-8") as file:
@@ -387,6 +377,20 @@ def run_training(
         "best_epoch": None,
         "best_val_loss": None,
         "best_val_acc": None,
+        "config": {
+            "hidden_sizes": config.model.hidden_sizes,
+            "activation": config.model.activation,
+            "dropout": config.model.dropout,
+            "use_batch_norm": config.model.use_batch_norm,
+            "epochs": config.train.epochs,
+            "batch_size": config.train.batch_size,
+            "learning_rate": config.train.learning_rate,
+            "optimizer": config.train.optimizer,
+            "scheduler": config.train.scheduler,
+            "regularizer": config.train.regularizer,
+            "reg_lambda": config.train.reg_lambda,
+            "weight_decay": config.train.weight_decay,
+        },
     }
 
     best_val_loss = float("inf")
@@ -395,14 +399,15 @@ def run_training(
     best_weights: Optional[Dict[str, torch.Tensor]] = None
     patience_counter = 0
 
-    print("\nStarting training...")
-    print(
-        f"Train size: {len(train_loader.dataset)} | "
-        f"Val size: {len(val_loader.dataset)}"
+    logger.info("Starting training...")
+    logger.info(
+        "Train size: %s | Val size: %s",
+        len(train_loader.dataset),
+        len(val_loader.dataset),
     )
 
     for epoch in range(1, config.train.epochs + 1):
-        print(f"\nEpoch {epoch}/{config.train.epochs}")
+        logger.info("Epoch %s/%s", epoch, config.train.epochs)
 
         train_loss, train_acc = train_one_epoch(
             model=model,
@@ -434,10 +439,13 @@ def run_training(
         history["val_acc"].append(val_acc)
         history["learning_rate"].append(current_lr)
 
-        print(
-            f"  Train | loss: {train_loss:.4f} | acc: {train_acc:.4f}\n"
-            f"  Val   | loss: {val_loss:.4f} | acc: {val_acc:.4f}\n"
-            f"  LR    | {current_lr:.6f}"
+        logger.info(
+            "  Train | loss: %.4f | acc: %.4f | Val | loss: %.4f | acc: %.4f | LR: %.6f",
+            train_loss,
+            train_acc,
+            val_loss,
+            val_acc,
+            current_lr,
         )
 
         improved = val_loss < (best_val_loss - config.train.min_delta)
@@ -451,23 +459,24 @@ def run_training(
             best_weights = copy.deepcopy(model.state_dict())
             torch.save(best_weights, config.run.save_path)
 
-            print(
-                f"  Saved best model to {config.run.save_path} "
-                f"(best_val_loss={best_val_loss:.4f})"
+            logger.info(
+                "  Saved best model to %s (best_val_loss=%.4f)",
+                config.run.save_path,
+                best_val_loss,
             )
         else:
             patience_counter += 1
-            print(
-                f"  No improvement in validation loss. "
-                f"Early-stop counter: {patience_counter}/"
-                f"{config.train.early_stopping_patience}"
+            logger.info(
+                "  No improvement in validation loss. Early-stop counter: %d/%d",
+                patience_counter,
+                config.train.early_stopping_patience,
             )
 
         if (
             config.train.early_stopping_patience > 0
             and patience_counter >= config.train.early_stopping_patience
         ):
-            print("  Early stopping triggered.")
+            logger.info("  Early stopping triggered.")
             break
 
     if best_weights is not None:
@@ -479,10 +488,10 @@ def run_training(
 
     save_history(history, config)
 
-    print("\nTraining complete.")
-    print(f"Best epoch     : {best_epoch}")
-    print(f"Best val loss  : {best_val_loss:.4f}")
-    print(f"Best val acc   : {best_val_acc:.4f}")
-    print(f"Checkpoint     : {config.run.save_path}")
+    logger.info("Training complete.")
+    logger.info("Best epoch     : %s", best_epoch)
+    logger.info("Best val loss  : %.4f", best_val_loss)
+    logger.info("Best val acc   : %.4f", best_val_acc)
+    logger.info("Checkpoint     : %s", config.run.save_path)
 
     return history

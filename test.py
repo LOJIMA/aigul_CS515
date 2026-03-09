@@ -1,6 +1,7 @@
 import json
+import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
@@ -9,6 +10,8 @@ from torchvision import datasets
 
 from parameters import Config
 from train import get_transforms
+
+logger = logging.getLogger("cs515")
 
 
 def get_test_loader(config: Config) -> DataLoader:
@@ -105,6 +108,7 @@ def save_test_results(results: Dict[str, Any], config: Config) -> None:
         config: Full experiment configuration.
     """
     save_path = Path(config.run.save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     results_path = save_path.parent / f"{config.run.experiment_name}_test_results.json"
 
     with results_path.open("w", encoding="utf-8") as file:
@@ -147,6 +151,7 @@ def run_test(
     test_loader = get_test_loader(config)
     criterion = nn.CrossEntropyLoss()
 
+    logger.info("Loading checkpoint from %s", checkpoint_path)
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
@@ -158,6 +163,9 @@ def run_test(
     running_loss = 0.0
     total_correct = 0
     total_samples = 0
+
+    logger.info("Starting test evaluation...")
+    logger.info("Test size: %s", len(test_loader.dataset))
 
     for images, labels in test_loader:
         images = images.to(device, non_blocking=True)
@@ -185,24 +193,45 @@ def run_test(
         "num_samples": total_samples,
         "per_class_accuracy": per_class_accuracy,
         "confusion_matrix": confusion_matrix,
+        "config": {
+            "hidden_sizes": config.model.hidden_sizes,
+            "activation": config.model.activation,
+            "dropout": config.model.dropout,
+            "use_batch_norm": config.model.use_batch_norm,
+            "batch_size": config.train.batch_size,
+            "learning_rate": config.train.learning_rate,
+            "optimizer": config.train.optimizer,
+            "scheduler": config.train.scheduler,
+            "regularizer": config.train.regularizer,
+            "reg_lambda": config.train.reg_lambda,
+            "weight_decay": config.train.weight_decay,
+        },
     }
 
     save_test_results(results, config)
 
-    print("\n" + "=" * 70)
-    print("Test Results")
-    print("=" * 70)
-    print(f"Average test loss : {test_loss:.4f}")
-    print(f"Overall accuracy  : {test_accuracy:.4f} ({total_correct}/{total_samples})")
-    print("-" * 70)
-    print("Per-class accuracy:")
+    logger.info("=" * 70)
+    logger.info("Test Results")
+    logger.info("=" * 70)
+    logger.info("Average test loss : %.4f", test_loss)
+    logger.info(
+        "Overall accuracy  : %.4f (%d/%d)",
+        test_accuracy,
+        total_correct,
+        total_samples,
+    )
+    logger.info("-" * 70)
+    logger.info("Per-class accuracy:")
     for class_idx, accuracy in enumerate(per_class_accuracy):
         class_total = sum(confusion_matrix[class_idx])
         class_correct = confusion_matrix[class_idx][class_idx]
-        print(
-            f"  Class {class_idx}: {accuracy:.4f} "
-            f"({class_correct}/{class_total})"
+        logger.info(
+            "  Class %d: %.4f (%d/%d)",
+            class_idx,
+            accuracy,
+            class_correct,
+            class_total,
         )
-    print("=" * 70)
+    logger.info("=" * 70)
 
     return results
